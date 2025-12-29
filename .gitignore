@@ -1,5 +1,6 @@
 # Binaries (root level only)
 /bgengine
+/bgserver
 *.exe
 *.exe~
 *.dll
