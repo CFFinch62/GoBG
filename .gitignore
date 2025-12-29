@@ -1,0 +1,33 @@
+# Binaries (root level only)
+/bgengine
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data files - too large to commit (download from gnubg)
+data/gnubg.weights
+data/gnubg_os0.bd
+data/gnubg_ts.bd
+data/g11.xml
+
