@@ -479,55 +479,174 @@ Tasks:
 
 ---
 
-### Phase 6: Web Service (Future)
+### Phase 6: Integration APIs 🔄
 
-**Goal:** Modern web deployment and API access.
+**Goal:** Make GoBG easily embeddable in any backgammon application, regardless of language or framework. Provide a drop-in replacement for gnubg that developers can actually use.
+
+**Why This Matters:**
+- gnubg is notoriously difficult to integrate with external applications
+- Developers building backgammon GUIs need a simple, performant AI engine
+- Language-agnostic APIs enable use from Python, JavaScript, C#, etc.
 
 Tasks:
-- [ ] REST API for evaluations
-- [ ] WebSocket for streaming rollouts
-- [ ] Docker deployment
-- [ ] API documentation
+
+**HTTP/JSON REST API**
+- [ ] REST API server with JSON request/response
+- [ ] Endpoints: `/evaluate`, `/move`, `/cube`, `/rollout`
+- [ ] Configurable port and host binding
+- [ ] Daemon mode (run as background service)
+- [ ] Graceful shutdown handling
+
+**C Shared Library (FFI)**
+- [ ] Build as C shared library (`libbgengine.so` / `bgengine.dll`)
+- [ ] CGO wrapper functions with C-compatible signatures
+- [ ] Header file generation for C/C++ integration
+- [ ] Memory management documentation
+
+**Python Integration**
+- [ ] Python package using ctypes (for C library) or requests (for REST API)
+- [ ] Pythonic wrapper classes (Engine, Position, Move, etc.)
+- [ ] Example: integrate with PyGame or Tkinter backgammon UI
+- [ ] pip-installable package
+
+**Documentation**
+- [ ] API reference with all endpoints/functions
+- [ ] Integration guide for each language (Python, JavaScript, C#)
+- [ ] Example projects showing integration patterns
+- [ ] Performance tuning guide
+
+Files to create:
+```
+cmd/
+  bgserver/           # HTTP API server
+    main.go
+pkg/
+  api/                # REST API handlers
+    server.go
+    handlers.go
+    types.go          # JSON request/response types
+  capi/               # C shared library exports
+    exports.go        # //export functions for CGO
+bindings/
+  python/
+    gobg/
+      __init__.py
+      engine.py       # Python wrapper
+      types.py
+    setup.py
+    examples/
+      simple_eval.py
+      pygame_integration.py
+```
 
 ---
 
-### Phase 7: Extended Features (Future)
+### Phase 7: Advanced Features & Deployment 🔮
 
-**Goal:** Advanced optimizations and features beyond gnubg.
+**Goal:** Production-ready deployment and advanced optimizations.
 
 Tasks:
+
+**Deployment**
+- [ ] Docker image with pre-loaded data files
+- [ ] Docker Compose for easy local deployment
+- [ ] Health check endpoints
+- [ ] Prometheus metrics (optional)
+
+**Streaming & Real-time**
+- [ ] WebSocket support for streaming rollout progress
+- [ ] Server-sent events (SSE) alternative
+- [ ] Progress callbacks for long operations
+
+**Performance Optimizations**
 - [ ] SIMD for neural net (using Go assembly or CGO)
+- [ ] Connection pooling for high-throughput scenarios
+- [ ] Evaluation caching with configurable size
+
+**Extended Features**
 - [ ] Opening book database
 - [ ] Match analysis from position list
-- [ ] Parallel rollouts with worker pools
+- [ ] Position database for common scenarios
+- [ ] Tutor API for analyzing played games
 
 ---
 
 ## Success Criteria
 
-1. **Accuracy:** Evaluations within 0.02 equity of gnubg 2-ply
-2. **Performance:** 10,000+ evaluations/second on single core
-3. **Rollouts:** 1,000 game rollout in <5 seconds (6 cores)
-4. **API:** Clean, documented, easy to embed
-5. **Testing:** >90% code coverage, validation against gnubg
+1. **Accuracy:** Evaluations within 0.02 equity of gnubg 2-ply ✅
+2. **Performance:** 10,000+ evaluations/second on single core ✅
+3. **Rollouts:** 1,000 game rollout in <5 seconds (6 cores) ✅
+4. **Embeddable:** Single HTTP call or function call to get best move
+5. **Language-agnostic:** Working examples in Python, JavaScript
+6. **Easy setup:** `docker run` or `pip install` to get started
+7. **Testing:** >90% code coverage, validation against gnubg
 
 ---
 
-## Getting Started
+## Integration Examples
 
-```bash
-# Create the project
-mkdir -p ~/go/src/github.com/yourusername/bgengine
-cd ~/go/src/github.com/yourusername/bgengine
-go mod init github.com/yourusername/bgengine
+### Python (REST API)
+```python
+import requests
 
-# Copy data files from gnubg
-cp /path/to/gnubg/gnubg.weights data/
-cp /path/to/gnubg/gnubg_os.bd data/
-cp /path/to/gnubg/gnubg_ts.bd data/
+class GoBGEngine:
+    def __init__(self, host="localhost", port=8080):
+        self.base_url = f"http://{host}:{port}/api"
 
-# Start with positionid (simplest, standalone)
-mkdir -p internal/positionid
-# Port positionid.c...
+    def best_move(self, position_id, dice):
+        response = requests.post(f"{self.base_url}/move", json={
+            "position": position_id,
+            "dice": dice
+        })
+        return response.json()
+
+# Usage
+engine = GoBGEngine()
+result = engine.best_move("4HPwATDgc/ABMA", [3, 1])
+print(f"Best move: {result['move']}, Equity: {result['equity']}")
 ```
+
+### Python (C Library)
+```python
+from gobg import Engine, Position
+
+engine = Engine("./data")
+pos = Position.starting()
+move, equity = engine.best_move(pos, dice=(3, 1))
+print(f"Best: {move} (Eq: {equity:+.3f})")
+```
+
+### JavaScript (REST API)
+```javascript
+const response = await fetch('http://localhost:8080/api/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        position: '4HPwATDgc/ABMA',
+        dice: [3, 1]
+    })
+});
+const { move, equity } = await response.json();
+```
+
+### cURL
+```bash
+curl -X POST http://localhost:8080/api/move \
+  -H "Content-Type: application/json" \
+  -d '{"position": "4HPwATDgc/ABMA", "dice": [3, 1]}'
+```
+
+---
+
+## Current Status
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 1 | ✅ Complete | Core Infrastructure |
+| Phase 2 | ✅ Complete | Neural Network Evaluation |
+| Phase 3 | ✅ Complete | Move Generation & Search |
+| Phase 4 | ✅ Complete | Cube Decisions & Match Play |
+| Phase 5 | ✅ Complete | External Protocol & Match Files |
+| Phase 6 | 🔄 Next | Integration APIs |
+| Phase 7 | 🔮 Future | Advanced Features & Deployment |
 
