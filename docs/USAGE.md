@@ -7,13 +7,16 @@ A comprehensive guide to using the GoBG backgammon analysis engine.
 1. [Installation](#installation)
 2. [Quick Start](#quick-start)
 3. [Command-Line Interface](#command-line-interface)
-4. [Library API](#library-api)
-5. [Match Play](#match-play)
-6. [Tutor Mode](#tutor-mode)
-7. [Position ID Format](#position-id-format)
-8. [Understanding Output](#understanding-output)
-9. [External Player Protocol](#external-player-protocol)
-10. [Match Import/Export](#match-importexport)
+4. [REST API Server](#rest-api-server)
+5. [Python Integration](#python-integration)
+6. [C Shared Library](#c-shared-library)
+7. [Library API](#library-api)
+8. [Match Play](#match-play)
+9. [Tutor Mode](#tutor-mode)
+10. [Position ID Format](#position-id-format)
+11. [Understanding Output](#understanding-output)
+12. [External Player Protocol](#external-player-protocol)
+13. [Match Import/Export](#match-importexport)
 
 ---
 
@@ -191,6 +194,245 @@ bgengine rollout -position <positionID> [options]
 
 # Reproducible rollout
 ./bgengine rollout -p "4HPwATDgc/ABMA" -trials 1000 -seed 12345
+```
+
+---
+
+## REST API Server
+
+The engine can be run as an HTTP server for integration with any language.
+
+### Starting the Server
+
+```bash
+# Build the server
+go build -o bgserver ./cmd/bgserver/
+
+# Run with defaults (localhost:8080)
+./bgserver
+
+# Run on a different port, accessible from network
+./bgserver -host 0.0.0.0 -port 8888
+```
+
+### Command-Line Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-host` | localhost | Host to bind to |
+| `-port` | 8080 | Port to listen on |
+| `-weights` | data/gnubg.weights | Neural network weights file |
+| `-bearoff` | data/gnubg_os0.bd | One-sided bearoff database |
+| `-bearoff-ts` | data/gnubg_ts.bd | Two-sided bearoff database |
+| `-met` | data/g11.xml | Match equity table |
+
+### API Endpoints
+
+#### GET /api/health
+
+Check server health.
+
+```bash
+curl http://localhost:8080/api/health
+```
+
+Response:
+```json
+{"status":"ok","version":"0.1.0","ready":true}
+```
+
+#### POST /api/evaluate
+
+Evaluate a position.
+
+```bash
+curl -X POST http://localhost:8080/api/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"position": "4HPwATDgc/ABMA", "ply": 0}'
+```
+
+Request body:
+```json
+{
+  "position": "4HPwATDgc/ABMA",
+  "ply": 0,
+  "cubeful": false
+}
+```
+
+Response:
+```json
+{
+  "equity": 0.079,
+  "win": 52.4,
+  "win_g": 14.9,
+  "win_bg": 0.76,
+  "lose_g": 11.9,
+  "lose_bg": 0.75,
+  "ply": 0,
+  "cubeful": false
+}
+```
+
+#### POST /api/move
+
+Find best moves for a position and dice roll.
+
+```bash
+curl -X POST http://localhost:8080/api/move \
+  -H "Content-Type: application/json" \
+  -d '{"position": "4HPwATDgc/ABMA", "dice": [3, 1], "num_moves": 3}'
+```
+
+Response:
+```json
+{
+  "moves": [
+    {"move": "8/5 6/5", "equity": 0.145, "win": 54.9, "win_g": 16.0},
+    {"move": "13/10 24/23", "equity": -0.018, "win": 49.5, "win_g": 12.3}
+  ],
+  "num_legal": 16,
+  "dice": [3, 1],
+  "position": "4HPwATDgc/ABMA"
+}
+```
+
+#### POST /api/cube
+
+Analyze cube decision.
+
+```bash
+curl -X POST http://localhost:8080/api/cube \
+  -H "Content-Type: application/json" \
+  -d '{"position": "4HPwATDgc/ABMA"}'
+```
+
+Response:
+```json
+{
+  "action": "no_double",
+  "double_equity": -0.166,
+  "no_double_equity": 0.257,
+  "take_equity": -0.166,
+  "double_diff": -0.423
+}
+```
+
+#### POST /api/rollout
+
+Run Monte Carlo rollout.
+
+```bash
+curl -X POST http://localhost:8080/api/rollout \
+  -H "Content-Type: application/json" \
+  -d '{"position": "4HPwATDgc/ABMA", "trials": 1000}'
+```
+
+---
+
+## Python Integration
+
+A Python package is provided for easy integration.
+
+### Installation
+
+```bash
+cd bindings/python
+pip install -e .
+```
+
+### Basic Usage
+
+```python
+from gobg import Engine
+
+# Connect to the server
+engine = Engine(host="localhost", port=8080)
+
+# Evaluate a position
+result = engine.evaluate("4HPwATDgc/ABMA")
+print(f"Equity: {result.equity:+.3f}")
+print(f"Win: {result.win:.1f}%")
+
+# Find best moves
+moves = engine.best_move("4HPwATDgc/ABMA", dice=(3, 1))
+for move in moves:
+    print(f"{move.move}: {move.equity:+.3f}")
+
+# Cube decision
+cube = engine.cube_decision("4HPwATDgc/ABMA")
+print(f"Action: {cube.action}")
+```
+
+---
+
+## C Shared Library
+
+The engine can be built as a C shared library for integration with C/C++, C#, or any language supporting FFI.
+
+### Building
+
+```bash
+go build -buildmode=c-shared -o libbgengine.so ./pkg/capi
+```
+
+This produces:
+- `libbgengine.so` - Shared library
+- `libbgengine.h` - C header file
+
+### API Functions
+
+```c
+// Get library version
+char* bgengine_version();
+
+// Initialize engine with data file paths
+int bgengine_init(char* weightsFile, char* bearoffFile,
+                  char* bearoffTSFile, char* metFile);
+
+// Shutdown engine
+void bgengine_shutdown();
+
+// Evaluate a position (returns JSON)
+int bgengine_evaluate(char* positionID, char** resultJSON);
+
+// Find best move (returns JSON)
+int bgengine_best_move(char* positionID, int die1, int die2, char** resultJSON);
+
+// Cube decision (returns JSON)
+int bgengine_cube_decision(char* positionID, char** resultJSON);
+
+// Free a string returned by other functions
+void bgengine_free_string(char* s);
+
+// Get last error message
+char* bgengine_last_error();
+```
+
+### Example Usage
+
+```c
+#include "libbgengine.h"
+#include <stdio.h>
+
+int main() {
+    // Initialize engine
+    if (bgengine_init("data/gnubg.weights", "data/gnubg_os0.bd",
+                      "data/gnubg_ts.bd", "data/g11.xml") != 0) {
+        printf("Error: %s\n", bgengine_last_error());
+        return 1;
+    }
+
+    // Evaluate position
+    char* json = NULL;
+    bgengine_evaluate("4HPwATDgc/ABMA", &json);
+    printf("Result: %s\n", json);
+    bgengine_free_string(json);
+
+    // Cleanup
+    bgengine_shutdown();
+    return 0;
+}
 ```
 
 ---
