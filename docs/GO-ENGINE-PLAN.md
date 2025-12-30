@@ -585,8 +585,8 @@ Tasks:
 **Extended Features**
 - [x] Opening book database (21 opening positions)
 - [x] Tutor API for analyzing played games
-- [ ] Match analysis from position list
-- [ ] Position database for common scenarios
+- [x] Match analysis from position list
+- [x] Position database for common scenarios
 
 ---
 
