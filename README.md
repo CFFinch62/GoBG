@@ -2,6 +2,10 @@
 
 A high-performance backgammon analysis engine written in Go. Originally ported from GNU Backgammon's evaluation core, GoBG has evolved into a feature-rich engine with modern APIs and optimizations not found in the original.
 
+## Author
+
+Chuck Finch - Fragillidae Software
+
 ## Features
 
 ### Core Analysis (GNU BG Parity)

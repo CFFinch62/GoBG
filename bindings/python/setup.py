@@ -6,7 +6,7 @@ setup(
     name="gobg",
     version="0.1.0",
     description="Python bindings for the GoBG backgammon engine",
-    author="GoBG Team",
+    author="Chuck Finch - Fragillidae Software",
     packages=find_packages(),
     python_requires=">=3.8",
     install_requires=[
