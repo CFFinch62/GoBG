@@ -587,6 +587,7 @@ Tasks:
 - [x] Tutor API for analyzing played games
 - [x] Match analysis from position list
 - [x] Position database for common scenarios
+- [x] Docker image and Docker Compose for deployment
 
 ---
 

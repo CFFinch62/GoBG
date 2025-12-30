@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+testdata/
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# Development files
+.env.local
+.env.*.local
+Makefile
+
+# Docker files (prevent infinite context)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Profiling
+*.prof
+*.test
+*.out
+
+# Vendor (if using go mod, we download fresh)
+vendor/
+

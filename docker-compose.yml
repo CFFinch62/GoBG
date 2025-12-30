@@ -1,0 +1,62 @@
+# GoBG Docker Compose Configuration
+# 
+# Quick start:
+#   docker compose up -d
+#
+# With custom port:
+#   GOBG_PORT=9090 docker compose up -d
+#
+# View logs:
+#   docker compose logs -f
+#
+# Stop:
+#   docker compose down
+
+services:
+  gobg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gobg/engine:latest
+    container_name: gobg-server
+    
+    # Port mapping: host:container
+    ports:
+      - "${GOBG_PORT:-8080}:8080"
+    
+    # Environment variables (optional overrides)
+    environment:
+      - TZ=${TZ:-UTC}
+    
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 512M
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Health check (also defined in Dockerfile)
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Optional: Add a volume for persistent data or custom configuration
+# volumes:
+#   gobg-data:
+

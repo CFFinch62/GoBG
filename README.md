@@ -28,17 +28,40 @@ A high-performance backgammon analysis engine written in Go. Originally ported f
 
 ## Quick Start
 
-### Prerequisites
+### Option 1: Docker (Easiest)
 
+```bash
+# Clone and run with Docker Compose
+git clone https://github.com/CFFinch62/GoBG.git
+cd GoBG
+docker compose up -d
+
+# API is now available at http://localhost:8080
+curl http://localhost:8080/health
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+Or build and run manually:
+```bash
+docker build -t gobg/engine .
+docker run -p 8080:8080 gobg/engine
+```
+
+### Option 2: Build from Source
+
+**Prerequisites:**
 - Go 1.21 or later
 - GNU Backgammon data files
 
-### Installation
-
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/bgengine.git
-cd bgengine
+git clone https://github.com/CFFinch62/GoBG.git
+cd GoBG
 
 # Copy required data files from gnubg installation
 cp /path/to/gnubg/gnubg.weights data/
