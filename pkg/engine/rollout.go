@@ -16,6 +16,18 @@ type RolloutOptions struct {
 	Cubeful  bool  // Include cube decisions in rollout
 }
 
+// RolloutProgress contains progress information during a rollout
+type RolloutProgress struct {
+	TrialsCompleted int     // Number of trials completed so far
+	TrialsTotal     int     // Total number of trials
+	Percent         float64 // Percentage complete (0-100)
+	CurrentEquity   float64 // Current equity estimate
+	CurrentCI       float64 // Current 95% confidence interval
+}
+
+// ProgressCallback is called periodically during rollout with progress updates
+type ProgressCallback func(progress RolloutProgress)
+
 // RolloutResult contains the results of a rollout
 type RolloutResult struct {
 	// Average probabilities
@@ -117,6 +129,198 @@ func (e *Engine) Rollout(state *GameState, opts RolloutOptions) (*RolloutResult,
 
 	// Aggregate results
 	return e.aggregateResults(results, opts.Trials)
+}
+
+// RolloutWithProgress performs a rollout with periodic progress callbacks
+// The callback is called after each batch of trials completes
+func (e *Engine) RolloutWithProgress(state *GameState, opts RolloutOptions, callback ProgressCallback) (*RolloutResult, error) {
+	// Set defaults
+	if opts.Trials <= 0 {
+		opts.Trials = 1296
+	}
+	if opts.Workers <= 0 {
+		opts.Workers = runtime.GOMAXPROCS(0)
+	}
+	if opts.Seed == 0 {
+		opts.Seed = rand.Int63()
+	}
+
+	// For progress reporting, we break trials into batches
+	// Report progress approximately 20 times during the rollout
+	batchSize := opts.Trials / 20
+	if batchSize < 1 {
+		batchSize = 1
+	}
+	if batchSize > opts.Trials/opts.Workers {
+		batchSize = opts.Trials / opts.Workers
+	}
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
+	// Channel for collecting incremental results
+	incrementalResults := make(chan partialResult, opts.Workers*20)
+	var wg sync.WaitGroup
+
+	// Launch workers with batch reporting
+	trialsPerWorker := opts.Trials / opts.Workers
+	extraTrials := opts.Trials % opts.Workers
+
+	for i := 0; i < opts.Workers; i++ {
+		wg.Add(1)
+		workerTrials := trialsPerWorker
+		if i < extraTrials {
+			workerTrials++
+		}
+		workerSeed := opts.Seed + int64(i)*1000000
+
+		go func(trials int, seed int64, batch int) {
+			defer wg.Done()
+			e.rolloutWorkerWithProgress(state, trials, seed, opts.Truncate, opts.Cubeful, batch, incrementalResults)
+		}(workerTrials, workerSeed, batchSize)
+	}
+
+	// Close channel when all workers done
+	go func() {
+		wg.Wait()
+		close(incrementalResults)
+	}()
+
+	// Aggregate results with progress reporting
+	return e.aggregateResultsWithProgress(incrementalResults, opts.Trials, callback)
+}
+
+// rolloutWorkerWithProgress performs rollouts and reports progress in batches
+func (e *Engine) rolloutWorkerWithProgress(state *GameState, trials int, seed int64, truncate int, cubeful bool, batchSize int, results chan<- partialResult) {
+	rng := rand.New(rand.NewSource(seed))
+
+	for trialsRemaining := trials; trialsRemaining > 0; {
+		// Process a batch
+		currentBatch := batchSize
+		if currentBatch > trialsRemaining {
+			currentBatch = trialsRemaining
+		}
+
+		pr := partialResult{}
+		for i := 0; i < currentBatch; i++ {
+			result := e.playOutGame(state, rng, truncate, cubeful)
+
+			pr.sumProbs[0] += result.WinProb
+			pr.sumProbs[1] += result.WinG
+			pr.sumProbs[2] += result.WinBG
+			pr.sumProbs[3] += result.LoseG
+			pr.sumProbs[4] += result.LoseBG
+
+			pr.sumSqProbs[0] += result.WinProb * result.WinProb
+			pr.sumSqProbs[1] += result.WinG * result.WinG
+			pr.sumSqProbs[2] += result.WinBG * result.WinBG
+			pr.sumSqProbs[3] += result.LoseG * result.LoseG
+			pr.sumSqProbs[4] += result.LoseBG * result.LoseBG
+
+			pr.sumEquity += result.Equity
+			pr.sumSqEquity += result.Equity * result.Equity
+			pr.trials++
+
+			if result.WinProb > 0.5 {
+				pr.wins++
+				if result.WinBG > 0 {
+					pr.bgsWon++
+				} else if result.WinG > 0 {
+					pr.gammonsWon++
+				}
+			} else {
+				pr.losses++
+				if result.LoseBG > 0 {
+					pr.bgsLost++
+				} else if result.LoseG > 0 {
+					pr.gammonsLost++
+				}
+			}
+		}
+
+		results <- pr
+		trialsRemaining -= currentBatch
+	}
+}
+
+// aggregateResultsWithProgress combines results and calls progress callback
+func (e *Engine) aggregateResultsWithProgress(results chan partialResult, totalTrials int, callback ProgressCallback) (*RolloutResult, error) {
+	var (
+		sumProbs                     [5]float64
+		sumSqProbs                   [5]float64
+		sumEquity                    float64
+		sumSqEquity                  float64
+		trials                       int
+		wins, gammonsWon, bgsWon     int
+		losses, gammonsLost, bgsLost int
+	)
+
+	for pr := range results {
+		for i := 0; i < 5; i++ {
+			sumProbs[i] += pr.sumProbs[i]
+			sumSqProbs[i] += pr.sumSqProbs[i]
+		}
+		sumEquity += pr.sumEquity
+		sumSqEquity += pr.sumSqEquity
+		trials += pr.trials
+		wins += pr.wins
+		gammonsWon += pr.gammonsWon
+		bgsWon += pr.bgsWon
+		losses += pr.losses
+		gammonsLost += pr.gammonsLost
+		bgsLost += pr.bgsLost
+
+		// Call progress callback
+		if callback != nil && trials > 0 {
+			n := float64(trials)
+			currentEquity := sumEquity / n
+			currentStdDev := calcStdDev(sumEquity, sumSqEquity, n)
+			currentCI := 1.96 * currentStdDev / math.Sqrt(n)
+
+			callback(RolloutProgress{
+				TrialsCompleted: trials,
+				TrialsTotal:     totalTrials,
+				Percent:         100.0 * float64(trials) / float64(totalTrials),
+				CurrentEquity:   currentEquity,
+				CurrentCI:       currentCI,
+			})
+		}
+	}
+
+	n := float64(trials)
+	if n == 0 {
+		return &RolloutResult{}, nil
+	}
+
+	// Calculate means
+	result := &RolloutResult{
+		WinProb:         sumProbs[0] / n,
+		WinG:            sumProbs[1] / n,
+		WinBG:           sumProbs[2] / n,
+		LoseG:           sumProbs[3] / n,
+		LoseBG:          sumProbs[4] / n,
+		Equity:          sumEquity / n,
+		TrialsCompleted: trials,
+		GamesWon:        wins,
+		GammonsWon:      gammonsWon,
+		BackgammonsWon:  bgsWon,
+		GamesLost:       losses,
+		GammonsLost:     gammonsLost,
+		BackgammonsLost: bgsLost,
+	}
+
+	// Calculate standard deviations
+	if n > 1 {
+		result.WinProbStdDev = calcStdDev(sumProbs[0], sumSqProbs[0], n)
+		result.WinGStdDev = calcStdDev(sumProbs[1], sumSqProbs[1], n)
+		result.WinBGStdDev = calcStdDev(sumProbs[2], sumSqProbs[2], n)
+		result.LoseGStdDev = calcStdDev(sumProbs[3], sumSqProbs[3], n)
+		result.LoseBGStdDev = calcStdDev(sumProbs[4], sumSqProbs[4], n)
+		result.EquityStdDev = calcStdDev(sumEquity, sumSqEquity, n)
+		result.EquityCI = 1.96 * result.EquityStdDev / math.Sqrt(n)
+	}
+
+	return result, nil
 }
 
 // aggregateResults combines partial results from workers

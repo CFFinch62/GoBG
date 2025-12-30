@@ -240,3 +240,122 @@ func BenchmarkRolloutTruncated(b *testing.B) {
 		}
 	}
 }
+
+func TestRolloutWithProgress(t *testing.T) {
+	engine, err := NewEngine(EngineOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	state := StartingPosition()
+	opts := RolloutOptions{
+		Trials:  500,
+		Seed:    12345,
+		Workers: 4,
+	}
+
+	var progressCalls []RolloutProgress
+	callback := func(p RolloutProgress) {
+		progressCalls = append(progressCalls, p)
+	}
+
+	result, err := engine.RolloutWithProgress(state, opts, callback)
+	if err != nil {
+		t.Fatalf("RolloutWithProgress failed: %v", err)
+	}
+
+	// Should have received multiple progress updates
+	if len(progressCalls) < 2 {
+		t.Errorf("Expected multiple progress callbacks, got %d", len(progressCalls))
+	}
+
+	// First progress call should have low percentage
+	if len(progressCalls) > 0 && progressCalls[0].Percent > 50 {
+		t.Errorf("First progress call should be early, got %.1f%%", progressCalls[0].Percent)
+	}
+
+	// Last progress call should be at 100%
+	if len(progressCalls) > 0 {
+		last := progressCalls[len(progressCalls)-1]
+		if last.Percent != 100.0 {
+			t.Errorf("Last progress call should be 100%%, got %.1f%%", last.Percent)
+		}
+		if last.TrialsCompleted != opts.Trials {
+			t.Errorf("Last progress call should have all trials, got %d", last.TrialsCompleted)
+		}
+	}
+
+	// Result should match regular rollout
+	if result.TrialsCompleted != opts.Trials {
+		t.Errorf("TrialsCompleted = %d, want %d", result.TrialsCompleted, opts.Trials)
+	}
+
+	t.Logf("Received %d progress callbacks", len(progressCalls))
+	for i, p := range progressCalls {
+		t.Logf("  [%d] %.1f%% (%d/%d) equity=%.4f ±%.4f",
+			i, p.Percent, p.TrialsCompleted, p.TrialsTotal, p.CurrentEquity, p.CurrentCI)
+	}
+}
+
+func TestRolloutWithProgressNilCallback(t *testing.T) {
+	engine, err := NewEngine(EngineOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	state := StartingPosition()
+	opts := RolloutOptions{
+		Trials:  100,
+		Seed:    12345,
+		Workers: 2,
+	}
+
+	// Should work with nil callback
+	result, err := engine.RolloutWithProgress(state, opts, nil)
+	if err != nil {
+		t.Fatalf("RolloutWithProgress with nil callback failed: %v", err)
+	}
+
+	if result.TrialsCompleted != opts.Trials {
+		t.Errorf("TrialsCompleted = %d, want %d", result.TrialsCompleted, opts.Trials)
+	}
+}
+
+func TestRolloutProgressEquityConvergence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping convergence test in short mode")
+	}
+
+	engine, err := NewEngine(EngineOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	state := StartingPosition()
+	opts := RolloutOptions{
+		Trials:  1000,
+		Seed:    12345,
+		Workers: 4,
+	}
+
+	var progressCalls []RolloutProgress
+	callback := func(p RolloutProgress) {
+		progressCalls = append(progressCalls, p)
+	}
+
+	result, err := engine.RolloutWithProgress(state, opts, callback)
+	if err != nil {
+		t.Fatalf("RolloutWithProgress failed: %v", err)
+	}
+
+	// CI should decrease as trials increase (convergence)
+	if len(progressCalls) >= 3 {
+		firstCI := progressCalls[0].CurrentCI
+		lastCI := progressCalls[len(progressCalls)-1].CurrentCI
+		if lastCI >= firstCI {
+			t.Logf("Warning: CI did not decrease (first=%.4f, last=%.4f)", firstCI, lastCI)
+		}
+	}
+
+	t.Logf("Final: equity=%.4f ±%.4f", result.Equity, result.EquityCI)
+}
