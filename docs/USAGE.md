@@ -8,9 +8,13 @@ A comprehensive guide to using the GoBG backgammon analysis engine.
 2. [Quick Start](#quick-start)
 3. [Command-Line Interface](#command-line-interface)
 4. [REST API Server](#rest-api-server)
+   - [WebSocket API](#websocket-apiws)
+   - [Server-Sent Events (SSE)](#get-apirolloutstream-sse)
 5. [Python Integration](#python-integration)
 6. [C Shared Library](#c-shared-library)
 7. [Library API](#library-api)
+   - [Opening Book](#opening-book)
+   - [Rollout with Progress](#rollout-with-progress-callbacks)
 8. [Match Play](#match-play)
 9. [Tutor Mode](#tutor-mode)
 10. [Position ID Format](#position-id-format)
@@ -225,12 +229,27 @@ go build -o bgserver ./cmd/bgserver/
 | `-bearoff` | data/gnubg_os0.bd | One-sided bearoff database |
 | `-bearoff-ts` | data/gnubg_ts.bd | Two-sided bearoff database |
 | `-met` | data/g11.xml | Match equity table |
+| `-max-fast-workers` | 100 | Max concurrent fast operations (evaluate, move, cube) |
+| `-max-slow-workers` | 4 | Max concurrent slow operations (rollout) |
+
+### Worker Pool Configuration
+
+The server uses a worker pool to manage concurrent requests:
+
+- **Fast operations** (evaluate, move, cube): Quick evaluations that take milliseconds. Default: 100 concurrent.
+- **Slow operations** (rollout): CPU-intensive rollouts that can take seconds. Default: 4 concurrent.
+
+When the pool is full, new requests wait until a slot becomes available. If the request context is cancelled (e.g., client disconnects), the request returns `503 Service Unavailable`.
+
+For high-throughput scenarios, tune these values based on your hardware:
+- Fast workers: Can be high since evaluations are quick
+- Slow workers: Keep low (typically number of CPU cores) since rollouts are CPU-bound
 
 ### API Endpoints
 
 #### GET /api/health
 
-Check server health.
+Check server health and worker pool status.
 
 ```bash
 curl http://localhost:8080/api/health
@@ -238,8 +257,28 @@ curl http://localhost:8080/api/health
 
 Response:
 ```json
-{"status":"ok","version":"0.1.0","ready":true}
+{
+  "status": "ok",
+  "version": "0.1.0",
+  "ready": true,
+  "pool": {
+    "active_fast": 5,
+    "active_slow": 2,
+    "queued_fast": 0,
+    "queued_slow": 3,
+    "total_fast": 1000,
+    "total_slow": 50,
+    "max_fast": 100,
+    "max_slow": 4
+  }
+}
 ```
+
+The `pool` field shows worker pool statistics for monitoring high-throughput scenarios:
+- `active_fast/slow`: Currently processing requests
+- `queued_fast/slow`: Requests waiting for a worker slot
+- `total_fast/slow`: Total requests processed since server start
+- `max_fast/slow`: Configured maximum concurrent workers
 
 #### POST /api/evaluate
 
@@ -326,6 +365,88 @@ Run Monte Carlo rollout.
 curl -X POST http://localhost:8080/api/rollout \
   -H "Content-Type: application/json" \
   -d '{"position": "4HPwATDgc/ABMA", "trials": 1000}'
+```
+
+#### GET /api/rollout/stream (SSE)
+
+Stream rollout progress via Server-Sent Events (SSE).
+
+```bash
+curl -N "http://localhost:8080/api/rollout/stream?position=4HPwATDgc/ABMA&trials=1000"
+```
+
+Response (event stream):
+```
+event: progress
+data: {"trials_completed":50,"trials_total":1000,"percent":5,"current_equity":0.12,"current_ci":0.35}
+
+event: progress
+data: {"trials_completed":100,"trials_total":1000,"percent":10,"current_equity":0.08,"current_ci":0.22}
+
+...
+
+event: result
+data: {"equity":0.02,"equity_ci":0.09,"win_prob":51.2,"trials_completed":1000}
+
+event: done
+```
+
+JavaScript example:
+```javascript
+const eventSource = new EventSource(
+  'http://localhost:8080/api/rollout/stream?position=4HPwATDgc/ABMA&trials=1000'
+);
+
+eventSource.addEventListener('progress', (e) => {
+  const progress = JSON.parse(e.data);
+  console.log(`${progress.percent}% complete, equity: ${progress.current_equity}`);
+});
+
+eventSource.addEventListener('result', (e) => {
+  const result = JSON.parse(e.data);
+  console.log(`Final equity: ${result.equity} ± ${result.equity_ci}`);
+  eventSource.close();
+});
+```
+
+#### WebSocket /api/ws
+
+Real-time bidirectional communication with streaming support.
+
+Connect:
+```javascript
+const ws = new WebSocket('ws://localhost:8080/api/ws');
+```
+
+Message types: `evaluate`, `move`, `cube`, `rollout`, `ping`
+
+Request format:
+```json
+{
+  "type": "rollout",
+  "id": "req-123",
+  "payload": {"position": "4HPwATDgc/ABMA", "trials": 1000}
+}
+```
+
+Response types: `result`, `progress`, `error`, `pong`
+
+Rollout with streaming progress:
+```javascript
+ws.send(JSON.stringify({
+  type: 'rollout',
+  id: 'roll-1',
+  payload: {position: '4HPwATDgc/ABMA', trials: 1000}
+}));
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === 'progress') {
+    console.log(`${msg.payload.percent}% - equity: ${msg.payload.current_equity}`);
+  } else if (msg.type === 'result') {
+    console.log('Final:', msg.payload);
+  }
+};
 ```
 
 ---
@@ -529,6 +650,38 @@ if err != nil {
 
 fmt.Printf("Equity: %+.3f ± %.3f\n", result.Equity, result.EquityCI)
 ```
+
+### Rollout with Progress Callbacks
+
+For long rollouts, use progress callbacks to report status:
+
+```go
+callback := func(p engine.RolloutProgress) {
+    fmt.Printf("\r%.0f%% complete (%d/%d) - equity: %+.3f ± %.3f",
+        p.Percent, p.TrialsCompleted, p.TrialsTotal,
+        p.CurrentEquity, p.CurrentCI)
+}
+
+result, err := e.RolloutWithProgress(state, opts, callback)
+```
+
+The callback receives updates at 5% intervals with:
+- `TrialsCompleted`, `TrialsTotal`, `Percent` - Progress info
+- `CurrentEquity`, `CurrentCI` - Running equity and confidence interval
+
+### Opening Book
+
+The engine includes an opening book for the 21 standard opening rolls:
+
+```go
+// Look up opening move
+if move, ok := e.LookupOpening(state, dice); ok {
+    fmt.Printf("Book move: %v\n", move)
+}
+```
+
+Supported rolls: 21, 31, 32, 41, 42, 43, 51, 52, 53, 54, 61, 62, 63, 64, 65,
+and doubles 11, 22, 33, 44, 55, 66.
 
 ### Core Types
 

@@ -63,6 +63,25 @@ opts := engine.RolloutOptions{
 - `Workers` scales linearly up to core count
 - `Trials: 324` (18^2) is sufficient for casual analysis
 
+### Rollout Progress Callbacks
+
+For long rollouts, use `RolloutWithProgress` to report status to users:
+
+```go
+callback := func(p engine.RolloutProgress) {
+    // Called at 5% intervals
+    fmt.Printf("%.0f%% complete, equity: %+.3f ± %.3f\n",
+        p.Percent, p.CurrentEquity, p.CurrentCI)
+}
+
+result, err := engine.RolloutWithProgress(state, opts, callback)
+```
+
+This is especially useful for:
+- Web UIs that stream progress via WebSocket or SSE
+- CLI tools showing progress bars
+- Long-running batch operations
+
 ## Memory Usage
 
 | Component | Memory | Notes |

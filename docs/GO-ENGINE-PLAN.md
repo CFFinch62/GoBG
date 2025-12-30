@@ -1,9 +1,9 @@
-# Go Backgammon Engine
+# GoBG - Go Backgammon Engine
 
-A high-performance backgammon analysis engine ported from GNU Backgammon's
-evaluation core, rewritten in idiomatic Go.
+A high-performance backgammon analysis engine that started as a port of GNU Backgammon's
+evaluation core, now extended with modern features and APIs not found in the original.
 
-## Project Status: Phase 6 Complete ✅
+## Project Status: Phase 7 In Progress 🚀
 
 **Completed Features:**
 - Position encoding/decoding (gnubg-compatible position IDs)
@@ -23,8 +23,24 @@ evaluation core, rewritten in idiomatic Go.
 - REST API server with JSON endpoints
 - C shared library (libbgengine.so) for FFI
 - Python bindings package
+- WebSocket with real-time rollout streaming
+- Server-Sent Events (SSE) for rollout progress
+- Opening book (21 optimal opening moves)
+- Progress callbacks for long-running operations
+- Connection pooling for high-throughput API scenarios
+- **SIMD-optimized neural network** (AVX2/SSE4.1)
+- **Tutor REST API** (move/cube/game analysis endpoints)
 
-**Next Phase:** Advanced Features & Deployment (Docker, WebSocket, SIMD)
+**Features Beyond GNU Backgammon:**
+- Modern REST API with JSON (gnubg has no HTTP interface)
+- WebSocket streaming for real-time analysis
+- SIMD-accelerated neural network inference
+- Connection pooling for high-concurrency scenarios
+- Tutor API for programmatic game analysis
+- C shared library for easy FFI integration
+- Python package with pip installation
+
+**Next:** Docker deployment, extended endgame databases
 
 **See:** [docs/USAGE.md](USAGE.md) for complete usage instructions.
 
@@ -553,24 +569,24 @@ Tasks:
 **Deployment**
 - [ ] Docker image with pre-loaded data files
 - [ ] Docker Compose for easy local deployment
-- [ ] Health check endpoints
+- [x] Health check endpoints
 - [ ] Prometheus metrics (optional)
 
-**Streaming & Real-time**
-- [ ] WebSocket support for streaming rollout progress
-- [ ] Server-sent events (SSE) alternative
-- [ ] Progress callbacks for long operations
+**Streaming & Real-time** ✅
+- [x] WebSocket support for streaming rollout progress
+- [x] Server-sent events (SSE) alternative
+- [x] Progress callbacks for long operations
 
 **Performance Optimizations**
-- [ ] SIMD for neural net (using Go assembly or CGO)
-- [ ] Connection pooling for high-throughput scenarios
-- [ ] Evaluation caching with configurable size
+- [x] SIMD for neural net (using Go assembly or CGO)
+- [x] Connection pooling for high-throughput scenarios
+- [x] Evaluation caching with configurable size
 
 **Extended Features**
-- [ ] Opening book database
+- [x] Opening book database (21 opening positions)
+- [x] Tutor API for analyzing played games
 - [ ] Match analysis from position list
 - [ ] Position database for common scenarios
-- [ ] Tutor API for analyzing played games
 
 ---
 
