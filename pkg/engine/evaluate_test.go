@@ -158,3 +158,52 @@ func TestGetMatchEquity(t *testing.T) {
 		t.Errorf("Expected match equity ~0.5 at 0-0, got %f", eq)
 	}
 }
+
+// Global to prevent compiler optimizations
+var benchEval *Evaluation
+
+func BenchmarkEvaluateEngine(b *testing.B) {
+	e, err := NewEngine(EngineOptions{
+		WeightsFileText: "../../data/gnubg.weights",
+	})
+	if err != nil {
+		b.Fatalf("NewEngine failed: %v", err)
+	}
+
+	state := StartingPosition()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchEval, _ = e.Evaluate(state)
+	}
+}
+
+func BenchmarkEvaluateEngineContact(b *testing.B) {
+	e, err := NewEngine(EngineOptions{
+		WeightsFileText: "../../data/gnubg.weights",
+	})
+	if err != nil {
+		b.Fatalf("NewEngine failed: %v", err)
+	}
+
+	// A contact position
+	state := &GameState{
+		Turn:      0,
+		CubeValue: 1,
+		CubeOwner: -1,
+	}
+	state.Board[0][5] = 5
+	state.Board[0][7] = 3
+	state.Board[0][12] = 5
+	state.Board[0][23] = 2
+
+	state.Board[1][5] = 5
+	state.Board[1][7] = 3
+	state.Board[1][12] = 5
+	state.Board[1][23] = 2
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchEval, _ = e.Evaluate(state)
+	}
+}

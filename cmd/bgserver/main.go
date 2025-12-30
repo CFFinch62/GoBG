@@ -24,6 +24,8 @@ func main() {
 	metFile := flag.String("met", "data/g11.xml", "Path to match equity table")
 	readTimeout := flag.Duration("read-timeout", 30*time.Second, "HTTP read timeout")
 	writeTimeout := flag.Duration("write-timeout", 30*time.Second, "HTTP write timeout")
+	maxFastWorkers := flag.Int("max-fast-workers", 100, "Max concurrent fast operations (evaluate, move, cube)")
+	maxSlowWorkers := flag.Int("max-slow-workers", 4, "Max concurrent slow operations (rollout)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 
 	flag.Parse()
@@ -54,11 +56,13 @@ func main() {
 
 	// Create server config
 	config := api.ServerConfig{
-		Host:         *host,
-		Port:         *port,
-		ReadTimeout:  *readTimeout,
-		WriteTimeout: *writeTimeout,
-		IdleTimeout:  60 * time.Second,
+		Host:           *host,
+		Port:           *port,
+		ReadTimeout:    *readTimeout,
+		WriteTimeout:   *writeTimeout,
+		IdleTimeout:    60 * time.Second,
+		MaxFastWorkers: *maxFastWorkers,
+		MaxSlowWorkers: *maxSlowWorkers,
 	}
 
 	// Create and start server
@@ -68,4 +72,3 @@ func main() {
 		log.Fatalf("Server error: %v", err)
 	}
 }
-

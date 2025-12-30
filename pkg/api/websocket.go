@@ -82,6 +82,8 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 		c.handleMove(msg)
 	case "cube":
 		c.handleCube(msg)
+	case "rollout":
+		c.handleRollout(msg)
 	case "ping":
 		c.sendChan <- WSResponse{Type: "pong", ID: msg.ID}
 	default:
@@ -193,4 +195,105 @@ func (c *WSClient) handleCube(msg WSMessage) {
 		NoDoubleEquity: analysis.Decision.NoDoubleEquity, TakeEquity: analysis.Decision.TakeEquity,
 		DoubleDiff: analysis.Decision.DoubleEquity - analysis.Decision.NoDoubleEquity,
 	}}
+}
+
+// WSRolloutRequest is the request payload for streaming rollout.
+type WSRolloutRequest struct {
+	Position string `json:"position"`
+	Trials   int    `json:"trials"`
+	Truncate int    `json:"truncate"`
+	Workers  int    `json:"workers"`
+}
+
+// WSRolloutProgress is sent during rollout to report progress.
+type WSRolloutProgress struct {
+	TrialsCompleted int     `json:"trials_completed"`
+	TrialsTotal     int     `json:"trials_total"`
+	Percent         float64 `json:"percent"`
+	CurrentEquity   float64 `json:"current_equity"`
+	CurrentCI       float64 `json:"current_ci"`
+}
+
+// WSRolloutResult is the final result of a rollout.
+type WSRolloutResult struct {
+	Equity          float64 `json:"equity"`
+	EquityCI        float64 `json:"equity_ci"`
+	WinProb         float64 `json:"win_prob"`
+	WinG            float64 `json:"win_g"`
+	WinBG           float64 `json:"win_bg"`
+	LoseG           float64 `json:"lose_g"`
+	LoseBG          float64 `json:"lose_bg"`
+	TrialsCompleted int     `json:"trials_completed"`
+	GamesWon        int     `json:"games_won"`
+	GamesLost       int     `json:"games_lost"`
+}
+
+func (c *WSClient) handleRollout(msg WSMessage) {
+	var req WSRolloutRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendChan <- WSResponse{Type: "error", ID: msg.ID, Error: "invalid payload"}
+		return
+	}
+
+	board, err := positionid.BoardFromPositionID(req.Position)
+	if err != nil {
+		c.sendChan <- WSResponse{Type: "error", ID: msg.ID, Error: "invalid position"}
+		return
+	}
+
+	gs := &engine.GameState{
+		Board:     engine.Board(board),
+		Turn:      0,
+		CubeValue: 1,
+		CubeOwner: -1,
+	}
+
+	trials := req.Trials
+	if trials <= 0 {
+		trials = 1296
+	}
+
+	opts := engine.RolloutOptions{
+		Trials:   trials,
+		Truncate: req.Truncate,
+		Workers:  req.Workers,
+	}
+
+	// Progress callback sends updates to client
+	callback := func(p engine.RolloutProgress) {
+		c.sendChan <- WSResponse{
+			Type: "progress",
+			ID:   msg.ID,
+			Payload: WSRolloutProgress{
+				TrialsCompleted: p.TrialsCompleted,
+				TrialsTotal:     p.TrialsTotal,
+				Percent:         p.Percent,
+				CurrentEquity:   p.CurrentEquity,
+				CurrentCI:       p.CurrentCI,
+			},
+		}
+	}
+
+	result, err := c.handlers.engine.RolloutWithProgress(gs, opts, callback)
+	if err != nil {
+		c.sendChan <- WSResponse{Type: "error", ID: msg.ID, Error: "rollout failed: " + err.Error()}
+		return
+	}
+
+	c.sendChan <- WSResponse{
+		Type: "result",
+		ID:   msg.ID,
+		Payload: WSRolloutResult{
+			Equity:          result.Equity,
+			EquityCI:        result.EquityCI,
+			WinProb:         result.WinProb * 100,
+			WinG:            result.WinG * 100,
+			WinBG:           result.WinBG * 100,
+			LoseG:           result.LoseG * 100,
+			LoseBG:          result.LoseBG * 100,
+			TrialsCompleted: result.TrialsCompleted,
+			GamesWon:        result.GamesWon,
+			GamesLost:       result.GamesLost,
+		},
+	}
 }

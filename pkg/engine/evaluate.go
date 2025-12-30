@@ -34,6 +34,12 @@ type Engine struct {
 
 	// Reusable buffers
 	inputPool sync.Pool
+
+	// SIMD optimization: pre-allocated evaluation buffers (per-network)
+	contactBufPool sync.Pool
+	raceBufPool    sync.Pool
+	crashedBufPool sync.Pool
+	outputPool     sync.Pool
 }
 
 // EngineOptions configures the engine
@@ -54,6 +60,11 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 				return make([]float32, neuralnet.NumContactInputs)
 			},
 		},
+		outputPool: sync.Pool{
+			New: func() interface{} {
+				return make([]float32, 5)
+			},
+		},
 	}
 
 	// Load neural network weights (try binary first, then text)
@@ -68,6 +79,9 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		e.pContact = weights.PContact
 		e.pCrashed = weights.PCrashed
 		e.pRace = weights.PRace
+
+		// Initialize SIMD buffer pools
+		e.initBufferPools()
 	} else if opts.WeightsFileText != "" {
 		weights, err := neuralnet.LoadWeightsText(opts.WeightsFileText)
 		if err != nil {
@@ -79,6 +93,9 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		e.pContact = weights.PContact
 		e.pCrashed = weights.PCrashed
 		e.pRace = weights.PRace
+
+		// Initialize SIMD buffer pools
+		e.initBufferPools()
 	}
 
 	// Load one-sided bearoff database
@@ -123,6 +140,31 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	}
 
 	return e, nil
+}
+
+// initBufferPools initializes the SIMD evaluation buffer pools based on loaded networks
+func (e *Engine) initBufferPools() {
+	if e.contact != nil {
+		e.contactBufPool = sync.Pool{
+			New: func() interface{} {
+				return neuralnet.NewEvaluateBuffer(e.contact.CInput, e.contact.CHidden)
+			},
+		}
+	}
+	if e.race != nil {
+		e.raceBufPool = sync.Pool{
+			New: func() interface{} {
+				return neuralnet.NewEvaluateBuffer(e.race.CInput, e.race.CHidden)
+			},
+		}
+	}
+	if e.crashed != nil {
+		e.crashedBufPool = sync.Pool{
+			New: func() interface{} {
+				return neuralnet.NewEvaluateBuffer(e.crashed.CInput, e.crashed.CHidden)
+			},
+		}
+	}
 }
 
 // Cache returns the evaluation cache (may be nil if disabled)
@@ -347,51 +389,66 @@ func (e *Engine) evaluateGameOver(board neuralnet.Board) (*Evaluation, error) {
 	return eval, nil
 }
 
-// evaluateRace evaluates a race position using the race neural network
+// evaluateRace evaluates a race position using the race neural network (SIMD optimized)
 func (e *Engine) evaluateRace(board neuralnet.Board) ([5]float32, error) {
 	if e.race == nil {
 		return [5]float32{0.5, 0, 0, 0, 0}, nil
 	}
 
 	inputs := neuralnet.RaceInputs(board)
-	output := e.race.Evaluate(inputs)
+
+	// Get buffer from pool and output slice
+	buf := e.raceBufPool.Get().(*neuralnet.EvaluateBuffer)
+	output := e.outputPool.Get().([]float32)
+	defer e.raceBufPool.Put(buf)
+	defer e.outputPool.Put(output)
+
+	e.race.EvaluateFast(inputs, output, buf)
 
 	var result [5]float32
-	for i := 0; i < 5 && i < len(output); i++ {
-		result[i] = output[i]
-	}
+	copy(result[:], output[:5])
 	return result, nil
 }
 
-// evaluateCrashed evaluates a crashed position using the crashed neural network
+// evaluateCrashed evaluates a crashed position using the crashed neural network (SIMD optimized)
 func (e *Engine) evaluateCrashed(board neuralnet.Board) ([5]float32, error) {
 	if e.crashed == nil {
 		return e.evaluateContact(board)
 	}
 
 	inputs := neuralnet.CrashedInputs(board)
-	output := e.crashed.Evaluate(inputs)
+
+	// Get buffer from pool
+	buf := e.crashedBufPool.Get().(*neuralnet.EvaluateBuffer)
+	output := e.outputPool.Get().([]float32)
+	defer e.crashedBufPool.Put(buf)
+	defer e.outputPool.Put(output)
+
+	e.crashed.EvaluateFast(inputs, output, buf)
 
 	var result [5]float32
-	for i := 0; i < 5 && i < len(output); i++ {
-		result[i] = output[i]
-	}
+	copy(result[:], output[:5])
 	return result, nil
 }
 
-// evaluateContact evaluates a contact position using the contact neural network
+// evaluateContact evaluates a contact position using the contact neural network (SIMD optimized)
 func (e *Engine) evaluateContact(board neuralnet.Board) ([5]float32, error) {
 	if e.contact == nil {
 		return [5]float32{0.5, 0.15, 0.01, 0.15, 0.01}, nil
 	}
 
 	inputs := neuralnet.ContactInputs(board)
-	output := e.contact.Evaluate(inputs)
+
+	// Get buffer from pool
+	buf := e.contactBufPool.Get().(*neuralnet.EvaluateBuffer)
+	output := e.outputPool.Get().([]float32)
+	defer e.contactBufPool.Put(buf)
+	defer e.outputPool.Put(output)
+
+	e.contact.EvaluateFast(inputs, output, buf)
 
 	var result [5]float32
-	for i := 0; i < 5 && i < len(output); i++ {
-		result[i] = output[i]
-	}
+	copy(result[:], output[:5])
 	return result, nil
 }
 
