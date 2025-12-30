@@ -15,21 +15,25 @@ import (
 
 // ServerConfig holds the server configuration.
 type ServerConfig struct {
-	Host         string        // Host to bind to (default "localhost")
-	Port         int           // Port to listen on (default 8080)
-	ReadTimeout  time.Duration // Read timeout (default 30s)
-	WriteTimeout time.Duration // Write timeout (default 30s)
-	IdleTimeout  time.Duration // Idle timeout (default 60s)
+	Host           string        // Host to bind to (default "localhost")
+	Port           int           // Port to listen on (default 8080)
+	ReadTimeout    time.Duration // Read timeout (default 30s)
+	WriteTimeout   time.Duration // Write timeout (default 30s)
+	IdleTimeout    time.Duration // Idle timeout (default 60s)
+	MaxFastWorkers int           // Max concurrent fast operations (default 100)
+	MaxSlowWorkers int           // Max concurrent slow operations (default 4)
 }
 
 // DefaultConfig returns a ServerConfig with sensible defaults.
 func DefaultConfig() ServerConfig {
 	return ServerConfig{
-		Host:         "localhost",
-		Port:         8080,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Host:           "localhost",
+		Port:           8080,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxFastWorkers: 100,
+		MaxSlowWorkers: 4,
 	}
 }
 
@@ -39,17 +43,38 @@ type Server struct {
 	engine   *engine.Engine
 	handlers *Handlers
 	server   *http.Server
+	pool     *WorkerPool
 	version  string
 }
 
 // NewServer creates a new API server.
 func NewServer(e *engine.Engine, config ServerConfig, version string) *Server {
+	poolConfig := PoolConfig{
+		MaxFastWorkers: config.MaxFastWorkers,
+		MaxSlowWorkers: config.MaxSlowWorkers,
+	}
+	if poolConfig.MaxFastWorkers <= 0 {
+		poolConfig.MaxFastWorkers = 100
+	}
+	if poolConfig.MaxSlowWorkers <= 0 {
+		poolConfig.MaxSlowWorkers = 4
+	}
+
+	pool := NewWorkerPool(poolConfig)
+	handlers := NewHandlersWithPool(e, version, pool)
+
 	return &Server{
 		config:   config,
 		engine:   e,
-		handlers: NewHandlers(e, version),
+		handlers: handlers,
+		pool:     pool,
 		version:  version,
 	}
+}
+
+// Pool returns the worker pool for monitoring.
+func (s *Server) Pool() *WorkerPool {
+	return s.pool
 }
 
 // corsMiddleware adds CORS headers for browser access.
@@ -87,7 +112,13 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("POST /api/move", s.handlers.Move)
 	mux.HandleFunc("POST /api/cube", s.handlers.Cube)
 	mux.HandleFunc("POST /api/rollout", s.handlers.Rollout)
+	mux.HandleFunc("GET /api/rollout/stream", s.handlers.RolloutSSE)
 	mux.HandleFunc("/api/ws", s.handlers.WebSocket)
+
+	// Tutor API routes
+	mux.HandleFunc("POST /api/tutor/move", s.handlers.HandleTutorMove)
+	mux.HandleFunc("POST /api/tutor/cube", s.handlers.HandleTutorCube)
+	mux.HandleFunc("POST /api/tutor/game", s.handlers.HandleAnalyzeGame)
 
 	// Also allow GET for health with legacy pattern
 	mux.HandleFunc("/api/health", s.handlers.Health)
@@ -112,12 +143,15 @@ func (s *Server) Start() error {
 
 	log.Printf("Starting GoBG API server v%s on %s", s.version, addr)
 	log.Printf("Endpoints:")
-	log.Printf("  GET  /api/health   - Health check")
-	log.Printf("  POST /api/evaluate - Evaluate position")
-	log.Printf("  POST /api/move     - Find best moves")
-	log.Printf("  POST /api/cube     - Cube decision")
-	log.Printf("  POST /api/rollout  - Monte Carlo rollout")
-	log.Printf("  WS   /api/ws       - WebSocket for real-time analysis")
+	log.Printf("  GET  /api/health      - Health check")
+	log.Printf("  POST /api/evaluate    - Evaluate position")
+	log.Printf("  POST /api/move        - Find best moves")
+	log.Printf("  POST /api/cube        - Cube decision")
+	log.Printf("  POST /api/rollout     - Monte Carlo rollout")
+	log.Printf("  POST /api/tutor/move  - Analyze played move")
+	log.Printf("  POST /api/tutor/cube  - Analyze cube decision")
+	log.Printf("  POST /api/tutor/game  - Analyze complete game")
+	log.Printf("  WS   /api/ws          - WebSocket for real-time analysis")
 
 	return s.server.ListenAndServe()
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -560,5 +561,603 @@ func TestWebSocketErrors(t *testing.T) {
 				t.Errorf("Error = %q, want containing %q", resp.Error, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestWebSocketRollout(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	server := httptest.NewServer(http.HandlerFunc(h.WebSocket))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Send rollout request
+	payload := `{"position":"4HPwATDgc/ABMA","trials":100,"truncate":5}`
+	msg := WSMessage{
+		Type:    "rollout",
+		ID:      "test-rollout-1",
+		Payload: json.RawMessage(payload),
+	}
+	if err := ws.WriteJSON(msg); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// Collect responses (progress updates + final result)
+	var progressCount int
+	var finalResult *WSResponse
+
+	ws.SetReadDeadline(time.Now().Add(30 * time.Second))
+	for {
+		var resp WSResponse
+		if err := ws.ReadJSON(&resp); err != nil {
+			t.Fatalf("Read failed: %v", err)
+		}
+
+		if resp.ID != "test-rollout-1" {
+			t.Errorf("Response ID = %q, want %q", resp.ID, "test-rollout-1")
+		}
+
+		switch resp.Type {
+		case "progress":
+			progressCount++
+		case "result":
+			finalResult = &resp
+		case "error":
+			t.Fatalf("Unexpected error: %s", resp.Error)
+		}
+
+		if resp.Type == "result" {
+			break
+		}
+	}
+
+	// Should have received progress updates
+	if progressCount < 1 {
+		t.Errorf("Expected progress updates, got %d", progressCount)
+	}
+
+	// Should have final result
+	if finalResult == nil {
+		t.Error("Expected final result")
+	}
+
+	t.Logf("Received %d progress updates before final result", progressCount)
+}
+
+func TestWebSocketRolloutProgress(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	server := httptest.NewServer(http.HandlerFunc(h.WebSocket))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Request more trials to get more progress updates
+	payload := `{"position":"4HPwATDgc/ABMA","trials":200,"truncate":5}`
+	msg := WSMessage{
+		Type:    "rollout",
+		ID:      "test-rollout-progress",
+		Payload: json.RawMessage(payload),
+	}
+	if err := ws.WriteJSON(msg); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// Track progress percentages
+	var percentages []float64
+
+	ws.SetReadDeadline(time.Now().Add(30 * time.Second))
+	for {
+		var resp WSResponse
+		if err := ws.ReadJSON(&resp); err != nil {
+			t.Fatalf("Read failed: %v", err)
+		}
+
+		if resp.Type == "progress" {
+			// Extract percent from payload
+			data, _ := json.Marshal(resp.Payload)
+			var progress WSRolloutProgress
+			json.Unmarshal(data, &progress)
+			percentages = append(percentages, progress.Percent)
+		}
+
+		if resp.Type == "result" {
+			break
+		}
+	}
+
+	// Verify percentages are increasing
+	for i := 1; i < len(percentages); i++ {
+		if percentages[i] < percentages[i-1] {
+			t.Errorf("Progress should increase: %.1f%% -> %.1f%%", percentages[i-1], percentages[i])
+		}
+	}
+
+	// Last progress should be 100%
+	if len(percentages) > 0 && percentages[len(percentages)-1] != 100.0 {
+		t.Errorf("Last progress should be 100%%, got %.1f%%", percentages[len(percentages)-1])
+	}
+
+	t.Logf("Progress updates: %v", percentages)
+}
+
+func TestRolloutSSE(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	server := httptest.NewServer(http.HandlerFunc(h.RolloutSSE))
+	defer server.Close()
+
+	// Make request with query parameters
+	url := server.URL + "?position=4HPwATDgc/ABMA&trials=100&truncate=5"
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", resp.Header.Get("Content-Type"), "text/event-stream")
+	}
+
+	// Read all events
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Read body failed: %v", err)
+	}
+
+	bodyStr := string(body)
+
+	// Should contain progress events
+	if !strings.Contains(bodyStr, "event: progress") {
+		t.Error("Expected progress events in response")
+	}
+
+	// Should contain result event
+	if !strings.Contains(bodyStr, "event: result") {
+		t.Error("Expected result event in response")
+	}
+
+	// Should contain done event
+	if !strings.Contains(bodyStr, "event: done") {
+		t.Error("Expected done event in response")
+	}
+
+	t.Logf("SSE response:\n%s", bodyStr[:min(500, len(bodyStr))])
+}
+
+func TestRolloutSSEMissingPosition(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	server := httptest.NewServer(http.HandlerFunc(h.RolloutSSE))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	if !strings.Contains(bodyStr, "event: error") {
+		t.Error("Expected error event for missing position")
+	}
+	if !strings.Contains(bodyStr, "position is required") {
+		t.Error("Expected 'position is required' error message")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ============================================================================
+// Tutor Handler Tests
+// ============================================================================
+
+func TestTutorMoveHandler(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	tests := []struct {
+		name       string
+		body       interface{}
+		wantStatus int
+		wantError  bool
+	}{
+		{
+			name: "valid move analysis",
+			body: TutorMoveRequest{
+				Position: "4HPwATDgc/ABMA", // Starting position
+				Dice:     [2]int{3, 1},
+				Move:     "8/5 6/5", // Good opening move
+			},
+			wantStatus: http.StatusOK,
+			wantError:  false,
+		},
+		{
+			name: "bad move analysis",
+			body: TutorMoveRequest{
+				Position: "4HPwATDgc/ABMA",
+				Dice:     [2]int{3, 1},
+				Move:     "24/21 24/23", // Running with back checkers - bad
+			},
+			wantStatus: http.StatusOK,
+			wantError:  false,
+		},
+		{
+			name:       "missing position",
+			body:       TutorMoveRequest{Dice: [2]int{3, 1}, Move: "8/5"},
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name:       "missing move",
+			body:       TutorMoveRequest{Position: "4HPwATDgc/ABMA", Dice: [2]int{3, 1}},
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name:       "invalid json",
+			body:       "not json",
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bodyBytes []byte
+			if str, ok := tt.body.(string); ok {
+				bodyBytes = []byte(str)
+			} else {
+				bodyBytes, _ = json.Marshal(tt.body)
+			}
+
+			req := httptest.NewRequest("POST", "/api/tutor/move", bytes.NewReader(bodyBytes))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			h.HandleTutorMove(w, req)
+
+			resp := w.Result()
+			if resp.StatusCode != tt.wantStatus {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("Status = %d, want %d. Body: %s", resp.StatusCode, tt.wantStatus, body)
+			}
+
+			if !tt.wantError && resp.StatusCode == http.StatusOK {
+				var result TutorMoveResponse
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					t.Fatalf("Failed to decode response: %v", err)
+				}
+				// Verify response has expected fields
+				if result.Skill == "" {
+					t.Error("Expected skill to be set")
+				}
+				if result.BestMove == "" {
+					t.Error("Expected best_move to be set")
+				}
+			}
+		})
+	}
+}
+
+func TestTutorMoveHandlerSkillDetection(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	// Test that move analysis returns valid structure
+	// Note: Test engine uses fallback values, so all moves evaluate similarly
+	body := TutorMoveRequest{
+		Position: "4HPwATDgc/ABMA", // Starting position
+		Dice:     [2]int{3, 1},
+		Move:     "24/21 24/23", // Running - normally a bad move
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/api/tutor/move", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleTutorMove(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var result TutorMoveResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	// Verify response structure is valid
+	if result.Skill == "" {
+		t.Error("Expected skill to be set")
+	}
+	if result.BestMove == "" {
+		t.Error("Expected best_move to be set")
+	}
+	// EquityLoss should be non-negative
+	if result.EquityLoss < 0 {
+		t.Errorf("Expected equity loss >= 0, got %f", result.EquityLoss)
+	}
+	t.Logf("Move analysis: skill=%s, loss=%.4f, best=%s", result.Skill, result.EquityLoss, result.BestMove)
+}
+
+func TestTutorCubeHandler(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	tests := []struct {
+		name       string
+		body       interface{}
+		wantStatus int
+		wantError  bool
+	}{
+		{
+			name: "valid cube analysis - no double",
+			body: TutorCubeRequest{
+				Position: "4HPwATDgc/ABMA", // Starting position
+				Action:   "no_double",
+			},
+			wantStatus: http.StatusOK,
+			wantError:  false,
+		},
+		{
+			name: "valid cube analysis - double",
+			body: TutorCubeRequest{
+				Position: "4HPwATDgc/ABMA",
+				Action:   "double",
+			},
+			wantStatus: http.StatusOK,
+			wantError:  false,
+		},
+		{
+			name:       "missing position",
+			body:       TutorCubeRequest{Action: "double"},
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name: "invalid action",
+			body: TutorCubeRequest{
+				Position: "4HPwATDgc/ABMA",
+				Action:   "invalid_action",
+			},
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bodyBytes []byte
+			if str, ok := tt.body.(string); ok {
+				bodyBytes = []byte(str)
+			} else {
+				bodyBytes, _ = json.Marshal(tt.body)
+			}
+
+			req := httptest.NewRequest("POST", "/api/tutor/cube", bytes.NewReader(bodyBytes))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			h.HandleTutorCube(w, req)
+
+			resp := w.Result()
+			if resp.StatusCode != tt.wantStatus {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("Status = %d, want %d. Body: %s", resp.StatusCode, tt.wantStatus, body)
+			}
+
+			if !tt.wantError && resp.StatusCode == http.StatusOK {
+				var result TutorCubeResponse
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					t.Fatalf("Failed to decode response: %v", err)
+				}
+				if result.Skill == "" {
+					t.Error("Expected skill to be set")
+				}
+				if result.Optimal == "" {
+					t.Error("Expected optimal to be set")
+				}
+			}
+		})
+	}
+}
+
+func TestAnalyzeGameHandler(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	tests := []struct {
+		name       string
+		body       interface{}
+		wantStatus int
+		wantError  bool
+	}{
+		{
+			name: "valid game analysis",
+			body: AnalyzeGameRequest{
+				Positions: []GamePosition{
+					{
+						Position: "4HPwATDgc/ABMA",
+						Dice:     [2]int{3, 1},
+						Move:     "8/5 6/5",
+						Player:   0,
+					},
+					{
+						Position: "4HPwATDgc/ABMA",
+						Dice:     [2]int{6, 4},
+						Move:     "24/14",
+						Player:   1,
+					},
+				},
+			},
+			wantStatus: http.StatusOK,
+			wantError:  false,
+		},
+		{
+			name:       "empty positions",
+			body:       AnalyzeGameRequest{Positions: []GamePosition{}},
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name:       "invalid json",
+			body:       "not json",
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bodyBytes []byte
+			if str, ok := tt.body.(string); ok {
+				bodyBytes = []byte(str)
+			} else {
+				bodyBytes, _ = json.Marshal(tt.body)
+			}
+
+			req := httptest.NewRequest("POST", "/api/tutor/game", bytes.NewReader(bodyBytes))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			h.HandleAnalyzeGame(w, req)
+
+			resp := w.Result()
+			if resp.StatusCode != tt.wantStatus {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("Status = %d, want %d. Body: %s", resp.StatusCode, tt.wantStatus, body)
+			}
+
+			if !tt.wantError && resp.StatusCode == http.StatusOK {
+				var result GameAnalysisResponse
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					t.Fatalf("Failed to decode response: %v", err)
+				}
+				if result.TotalMoves == 0 {
+					t.Error("Expected total_moves > 0")
+				}
+			}
+		})
+	}
+}
+
+func TestAnalyzeGameHandlerWithErrors(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	// Create a game with multiple positions
+	// Note: Test engine uses fallback values, so error detection may not work
+	body := AnalyzeGameRequest{
+		Positions: []GamePosition{
+			{
+				Position: "4HPwATDgc/ABMA",
+				Dice:     [2]int{3, 1},
+				Move:     "24/21 24/23",
+				Player:   0,
+			},
+			{
+				Position: "4HPwATDgc/ABMA",
+				Dice:     [2]int{3, 1},
+				Move:     "8/5 6/5",
+				Player:   1,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/api/tutor/game", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleAnalyzeGame(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var result GameAnalysisResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	// Verify response structure
+	if result.TotalMoves != 2 {
+		t.Errorf("Expected 2 total moves, got %d", result.TotalMoves)
+	}
+
+	// Should have suggestions (always generated)
+	if len(result.Suggestions) == 0 {
+		t.Error("Expected suggestions to be generated")
+	}
+
+	// Verify player stats are populated
+	for i := 0; i < 2; i++ {
+		if result.Players[i].Rating == "" {
+			t.Errorf("Expected player %d rating to be set", i)
+		}
+	}
+
+	t.Logf("Game analysis: %d moves, %d errors, suggestions: %v",
+		result.TotalMoves, len(result.MoveErrors), result.Suggestions)
+}
+
+func TestTutorMoveHandlerTopMoves(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	body := TutorMoveRequest{
+		Position: "4HPwATDgc/ABMA",
+		Dice:     [2]int{3, 1},
+		Move:     "8/5 6/5",
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/api/tutor/move", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleTutorMove(w, req)
+
+	var result TutorMoveResponse
+	json.NewDecoder(w.Result().Body).Decode(&result)
+
+	// Should have top moves for context
+	if len(result.TopMoves) == 0 {
+		t.Error("Expected top_moves to be populated")
+	}
+
+	// Top moves should be ordered by equity
+	for i := 1; i < len(result.TopMoves); i++ {
+		if result.TopMoves[i].Equity > result.TopMoves[i-1].Equity {
+			t.Errorf("Top moves not sorted: move %d equity %.4f > move %d equity %.4f",
+				i, result.TopMoves[i].Equity, i-1, result.TopMoves[i-1].Equity)
+		}
+	}
+
+	t.Logf("Top %d moves returned", len(result.TopMoves))
+	for i, m := range result.TopMoves {
+		t.Logf("  %d. %s (equity: %.4f)", i+1, m.Move, m.Equity)
 	}
 }
