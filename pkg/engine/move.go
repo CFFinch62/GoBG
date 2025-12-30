@@ -237,3 +237,116 @@ func CountHits(board Board, m Move) int8 {
 	}
 	return hits
 }
+
+// ParseMove parses a move notation string like "8/5 6/5" into a Move.
+// Points are 1-indexed (1-24), "bar" for bar, "off" for bearing off.
+func ParseMove(notation string) (Move, error) {
+	move := Move{
+		From: [4]int8{-1, -1, -1, -1},
+		To:   [4]int8{-1, -1, -1, -1},
+	}
+
+	// Split by spaces to get individual checker moves
+	parts := splitFields(notation)
+	if len(parts) == 0 {
+		return move, nil // Empty move (dancer)
+	}
+
+	moveIdx := 0
+	for _, part := range parts {
+		if moveIdx >= 4 {
+			break
+		}
+
+		// Handle notation like "8/5(2)" meaning move 2 checkers
+		count := 1
+		if idx := indexByte(part, '('); idx != -1 {
+			endIdx := indexByte(part, ')')
+			if endIdx > idx {
+				count = atoi(part[idx+1 : endIdx])
+			}
+			part = part[:idx]
+		}
+
+		// Split by "/" to get from/to
+		slashIdx := indexByte(part, '/')
+		if slashIdx == -1 {
+			continue
+		}
+		fromStr := part[:slashIdx]
+		toStr := part[slashIdx+1:]
+
+		from := parsePointNotation(fromStr)
+		to := parsePointNotation(toStr)
+
+		for i := 0; i < count && moveIdx < 4; i++ {
+			move.From[moveIdx] = int8(from)
+			move.To[moveIdx] = int8(to)
+			moveIdx++
+		}
+	}
+
+	return move, nil
+}
+
+// splitFields splits a string by whitespace.
+func splitFields(s string) []string {
+	var result []string
+	start := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' {
+			if start >= 0 {
+				result = append(result, s[start:i])
+				start = -1
+			}
+		} else {
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		result = append(result, s[start:])
+	}
+	return result
+}
+
+// indexByte returns the index of the first occurrence of c in s, or -1.
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// atoi converts a string to an int, returning 0 on error.
+func atoi(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			n = n*10 + int(s[i]-'0')
+		}
+	}
+	return n
+}
+
+// parsePointNotation converts point notation to internal index.
+// "bar" = 24 (index), "off" = -1, numbers are 1-indexed points.
+func parsePointNotation(s string) int {
+	// Lowercase comparison
+	if len(s) == 3 && (s[0] == 'b' || s[0] == 'B') && (s[1] == 'a' || s[1] == 'A') && (s[2] == 'r' || s[2] == 'R') {
+		return 24 // Bar is index 24
+	}
+	if len(s) == 3 && (s[0] == 'o' || s[0] == 'O') && (s[1] == 'f' || s[1] == 'F') && (s[2] == 'f' || s[2] == 'F') {
+		return -1 // Off is -1
+	}
+
+	// Parse as number (1-indexed point)
+	point := atoi(s)
+	if point >= 1 && point <= 24 {
+		return point - 1 // Convert to 0-indexed
+	}
+	return -1
+}
