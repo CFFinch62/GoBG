@@ -8,6 +8,7 @@ import (
 
 	"github.com/yourusername/bgengine/internal/positionid"
 	"github.com/yourusername/bgengine/pkg/engine"
+	"github.com/yourusername/bgengine/pkg/external"
 )
 
 // Handlers holds the HTTP handlers and engine reference.
@@ -361,6 +362,119 @@ func (h *Handlers) Rollout(w http.ResponseWriter, r *http.Request) {
 		Truncated:   req.Truncate > 0,
 		TruncatePly: req.Truncate,
 	})
+}
+
+// HandleFIBSBoard handles FIBS board string analysis.
+// POST /api/fibsboard
+func (h *Handlers) HandleFIBSBoard(w http.ResponseWriter, r *http.Request) {
+	var req FIBSBoardRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON", "INVALID_JSON")
+		return
+	}
+
+	if req.Board == "" {
+		writeError(w, http.StatusBadRequest, "board is required", "MISSING_BOARD")
+		return
+	}
+
+	// Parse FIBS board string
+	fb, err := external.ParseFIBSBoard(req.Board)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid FIBS board: %v", err), "INVALID_FIBS_BOARD")
+		return
+	}
+
+	// Convert to engine GameState
+	state := fb.ToGameState()
+
+	// Get position ID
+	posID := positionid.PositionID(positionid.Board(state.Board))
+
+	// Evaluate position
+	eval, err := h.engine.Evaluate(state)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Evaluation failed: %v", err), "EVAL_ERROR")
+		return
+	}
+
+	// Build response
+	resp := FIBSBoardResponse{
+		Player1:     fb.Player1,
+		Player2:     fb.Player2,
+		MatchLength: fb.MatchLength,
+		Score1:      fb.Score1,
+		Score2:      fb.Score2,
+		CubeValue:   fb.Cube,
+		Turn:        fb.Turn,
+		Dice:        fb.Dice,
+		OppDice:     fb.OppDice,
+		Equity:      eval.Equity,
+		Win:         eval.WinProb * 100,
+		WinG:        eval.WinG * 100,
+		WinBG:       eval.WinBG * 100,
+		LoseG:       eval.LoseG * 100,
+		LoseBG:      eval.LoseBG * 100,
+		PositionID:  posID,
+	}
+
+	// If dice are rolled, get best moves
+	if fb.Dice[0] > 0 && fb.Dice[1] > 0 {
+		numMoves := req.NumMoves
+		if numMoves <= 0 {
+			numMoves = 5
+		}
+
+		analysis, err := h.engine.AnalyzePosition(state, fb.Dice)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("Analysis failed: %v", err), "ANALYSIS_ERROR")
+			return
+		}
+
+		resp.NumLegal = analysis.NumMoves
+
+		// Return up to numMoves best moves
+		count := numMoves
+		if count > len(analysis.Moves) {
+			count = len(analysis.Moves)
+		}
+
+		for i := 0; i < count; i++ {
+			m := analysis.Moves[i]
+			moveResp := MoveResponse{
+				Move:   formatMove(m.Move),
+				Equity: m.Equity,
+			}
+			if m.Eval != nil {
+				moveResp.Win = m.Eval.WinProb * 100
+				moveResp.WinG = m.Eval.WinG * 100
+			}
+			resp.Moves = append(resp.Moves, moveResp)
+		}
+	}
+
+	// Cube decision (if it's your turn and you can double)
+	if fb.Turn == 1 && fb.CanDouble && fb.Dice[0] == 0 {
+		cubeAnalysis, err := h.engine.AnalyzeCube(state)
+		if err == nil {
+			resp.NoDoubleEquity = cubeAnalysis.NoDoubleEquity
+			resp.DoubleEquity = cubeAnalysis.DoubleTakeEq
+
+			switch cubeAnalysis.Decision.Action {
+			case engine.Double, engine.Redouble:
+				// Check if opponent should take or pass
+				if cubeAnalysis.DoubleTakeEq > cubeAnalysis.DoublePassEq {
+					resp.CubeAction = "double_take"
+				} else {
+					resp.CubeAction = "double_pass"
+				}
+			default:
+				resp.CubeAction = "no_double"
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // HandleTutorMove analyzes a played move and returns skill analysis.

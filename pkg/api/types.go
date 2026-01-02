@@ -84,6 +84,13 @@ type AnalyzeGameRequest struct {
 	MatchPlay bool           `json:"match_play,omitempty"` // True for match, false for money
 }
 
+// FIBSBoardRequest is the request body for FIBS board analysis.
+// Accepts a FIBS board string as defined at http://www.fibs.com/fibs_interface.html#board_state
+type FIBSBoardRequest struct {
+	Board    string `json:"board"`               // FIBS board string (e.g., "board:You:Opponent:5:2:3:...")
+	NumMoves int    `json:"num_moves,omitempty"` // Max moves to return (default 5)
+}
+
 // GamePosition represents a single position in a game to analyze.
 type GamePosition struct {
 	Position    string `json:"position"`               // Position ID
@@ -159,6 +166,40 @@ type ErrorResponse struct {
 	Error   string `json:"error"`             // Error message
 	Code    string `json:"code,omitempty"`    // Error code
 	Details string `json:"details,omitempty"` // Additional details
+}
+
+// FIBSBoardResponse is the response for FIBS board analysis.
+type FIBSBoardResponse struct {
+	// Parsed board info
+	Player1     string `json:"player1"`      // Your name
+	Player2     string `json:"player2"`      // Opponent's name
+	MatchLength int    `json:"match_length"` // Match length (0 = unlimited)
+	Score1      int    `json:"score1"`       // Your score
+	Score2      int    `json:"score2"`       // Opponent's score
+	CubeValue   int    `json:"cube_value"`   // Current cube value
+	Turn        int    `json:"turn"`         // Whose turn (1 = you, -1 = opponent)
+	Dice        [2]int `json:"dice"`         // Your dice (0,0 if not rolled)
+	OppDice     [2]int `json:"opp_dice"`     // Opponent's dice
+
+	// Evaluation
+	Equity float64 `json:"equity"`  // Expected value
+	Win    float64 `json:"win"`     // P(win) as percentage
+	WinG   float64 `json:"win_g"`   // P(win gammon) as percentage
+	WinBG  float64 `json:"win_bg"`  // P(win backgammon) as percentage
+	LoseG  float64 `json:"lose_g"`  // P(lose gammon) as percentage
+	LoseBG float64 `json:"lose_bg"` // P(lose backgammon) as percentage
+
+	// Best moves (if dice are rolled)
+	Moves    []MoveResponse `json:"moves,omitempty"`     // Ranked moves (best first)
+	NumLegal int            `json:"num_legal,omitempty"` // Total number of legal moves
+
+	// Cube decision (if it's your turn and you can double)
+	CubeAction     string  `json:"cube_action,omitempty"`      // "no_double", "double_take", "double_pass"
+	DoubleEquity   float64 `json:"double_equity,omitempty"`    // Equity if doubled
+	NoDoubleEquity float64 `json:"no_double_equity,omitempty"` // Equity if not doubled
+
+	// Position ID for reference
+	PositionID string `json:"position_id"` // gnubg position ID
 }
 
 // HealthResponse is the response for health check.

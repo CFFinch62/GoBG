@@ -158,13 +158,16 @@ func addBits(key *OldPositionKey, bitPos, nBits uint32) {
 	r := bitPos & 0x7
 	b := ((uint32(1) << nBits) - 1) << r
 
-	key.Data[k] |= uint8(b)
+	if k < 10 {
+		key.Data[k] |= uint8(b)
+	}
 
-	if k < 8 {
+	if k+1 < 10 {
 		key.Data[k+1] |= uint8(b >> 8)
+	}
+
+	if k+2 < 10 {
 		key.Data[k+2] |= uint8(b >> 16)
-	} else if k == 8 {
-		key.Data[k+1] |= uint8(b >> 8)
 	}
 }
 

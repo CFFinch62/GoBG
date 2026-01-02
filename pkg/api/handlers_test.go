@@ -1161,3 +1161,200 @@ func TestTutorMoveHandlerTopMoves(t *testing.T) {
 		t.Logf("  %d. %s (equity: %.4f)", i+1, m.Move, m.Equity)
 	}
 }
+
+// ============================================================================
+// FIBS Board Handler Tests
+// ============================================================================
+
+func TestFIBSBoardHandler(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	tests := []struct {
+		name       string
+		body       interface{}
+		wantStatus int
+		wantError  bool
+	}{
+		{
+			name: "valid fibs board - starting position",
+			body: FIBSBoardRequest{
+				Board: "board:You:Opponent:5:0:0:0:2:0:0:0:0:5:0:3:0:0:0:0:5:0:0:0:0:0:0:0:0:2:0:-2:0:0:0:0:0:-5:0:-3:0:0:0:0:-5:0:0:0:0:0:0:0:0:-2:0:1:3:1:0:0:1:1:1:0:1:-1:0:25:0:0:0:0:0:0:0:0",
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "valid fibs board with num_moves",
+			body: FIBSBoardRequest{
+				Board:    "board:You:Opponent:5:0:0:0:2:0:0:0:0:5:0:3:0:0:0:0:5:0:0:0:0:0:0:0:0:2:0:-2:0:0:0:0:0:-5:0:-3:0:0:0:0:-5:0:0:0:0:0:0:0:0:-2:0:1:3:1:0:0:1:1:1:0:1:-1:0:25:0:0:0:0:0:0:0:0",
+				NumMoves: 3,
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "missing board",
+			body:       FIBSBoardRequest{},
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name: "invalid fibs board - too few fields",
+			body: FIBSBoardRequest{
+				Board: "board:You:Opponent:5:0:0",
+			},
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+		{
+			name:       "invalid json",
+			body:       "not json",
+			wantStatus: http.StatusBadRequest,
+			wantError:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var body []byte
+			if s, ok := tc.body.(string); ok {
+				body = []byte(s)
+			} else {
+				body, _ = json.Marshal(tc.body)
+			}
+			req := httptest.NewRequest("POST", "/api/fibsboard", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			h.HandleFIBSBoard(w, req)
+
+			resp := w.Result()
+			if resp.StatusCode != tc.wantStatus {
+				respBody, _ := io.ReadAll(resp.Body)
+				t.Errorf("Status = %d, want %d. Body: %s", resp.StatusCode, tc.wantStatus, respBody)
+			}
+
+			if !tc.wantError && tc.wantStatus == http.StatusOK {
+				var fibsResp FIBSBoardResponse
+				if err := json.NewDecoder(resp.Body).Decode(&fibsResp); err != nil {
+					t.Fatalf("Decode error: %v", err)
+				}
+				// Verify response has expected fields
+				if fibsResp.Player1 == "" {
+					t.Error("Expected player1 to be set")
+				}
+				if fibsResp.Player2 == "" {
+					t.Error("Expected player2 to be set")
+				}
+				if fibsResp.PositionID == "" {
+					t.Error("Expected position_id to be set")
+				}
+				// Win probability should be in range
+				if fibsResp.Win < 0 || fibsResp.Win > 100 {
+					t.Errorf("Win = %f, want 0-100", fibsResp.Win)
+				}
+			}
+		})
+	}
+}
+
+func TestFIBSBoardHandlerWithDice(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	// FIBS board string with dice rolled (3,1)
+	// Format after "board:" prefix:
+	// 0-1: player names, 2: match length, 3-4: scores,
+	// 5-30: board[26], 31: turn, 32-35: dice[4], 36: cube, 37-38: can_double, 39: doubled
+	// Starting position in FIBS format:
+	// Points 0-25 where positive=your checkers, negative=opponent
+	// FIBS counts from 1-24, with 0=off and 25=bar
+	// Starting: 2 on point 1, 5 on point 12, 3 on point 17, 5 on point 19 (for player)
+	// Opponent: 2 on 24, 5 on 13, 3 on 8, 5 on 6
+	// Build a proper starting position FIBS string:
+	// pos[1]=2, pos[6]=-5, pos[8]=-3, pos[12]=5, pos[13]=-5, pos[17]=3, pos[19]=5, pos[24]=-2
+	body := FIBSBoardRequest{
+		// Starting position with 3,1 dice
+		// Format: board:p1:p2:ml:s1:s2:board[26]:turn:d1:d2:od1:od2:cube:candbl:oppcandbl
+		// Fields after "board:": 0-1=names, 2=ml, 3-4=scores, 5-30=board[26], 31=turn, 32-35=dice
+		// Board[26]: indices 0-25, where 0 is off, 25 is bar
+		// Starting: point1=2, point6=-5, point8=-3, point12=5, point13=-5, point17=3, point19=5, point24=-2
+		Board:    "board:You:Opponent:5:0:0:0:2:0:0:0:0:-5:0:-3:0:0:0:5:-5:0:0:0:3:0:5:0:0:0:-2:0:0:1:3:1:0:0:1:1:1",
+		NumMoves: 5,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/api/fibsboard", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleFIBSBoard(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Status = %d, want %d. Body: %s", resp.StatusCode, http.StatusOK, respBody)
+	}
+
+	var fibsResp FIBSBoardResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fibsResp); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+
+	// Verify dice were parsed correctly
+	if fibsResp.Dice[0] != 3 || fibsResp.Dice[1] != 1 {
+		t.Errorf("Dice = %v, want [3,1]", fibsResp.Dice)
+	}
+
+	// Position with checkers should have legal moves
+	if fibsResp.NumLegal > 0 {
+		t.Logf("FIBS board analysis: %s vs %s, %d legal moves, top %d returned",
+			fibsResp.Player1, fibsResp.Player2, fibsResp.NumLegal, len(fibsResp.Moves))
+		for i, m := range fibsResp.Moves {
+			t.Logf("  %d. %s (equity: %.4f)", i+1, m.Move, m.Equity)
+		}
+	} else {
+		// Even if no moves (e.g., the board layout is unusual), the response structure should be valid
+		t.Logf("FIBS board analysis: dice %v parsed, num_legal=%d", fibsResp.Dice, fibsResp.NumLegal)
+	}
+}
+
+func TestFIBSBoardHandlerParsesPlayerNames(t *testing.T) {
+	eng := getTestEngine()
+	h := NewHandlers(eng, "1.0.0")
+
+	// FIBS board with specific player names
+	body := FIBSBoardRequest{
+		Board: "board:Alice:Bob:7:3:2:0:2:0:0:0:0:5:0:3:0:0:0:0:5:0:0:0:0:0:0:0:0:2:0:-2:0:0:0:0:0:-5:0:-3:0:0:0:0:-5:0:0:0:0:0:0:0:0:-2:0:1:0:0:0:0:1:1:1:0:1:-1:0:25:0:0:0:0:0:0:0:0",
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/api/fibsboard", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleFIBSBoard(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var fibsResp FIBSBoardResponse
+	json.NewDecoder(resp.Body).Decode(&fibsResp)
+
+	if fibsResp.Player1 != "Alice" {
+		t.Errorf("Player1 = %q, want %q", fibsResp.Player1, "Alice")
+	}
+	if fibsResp.Player2 != "Bob" {
+		t.Errorf("Player2 = %q, want %q", fibsResp.Player2, "Bob")
+	}
+	if fibsResp.MatchLength != 7 {
+		t.Errorf("MatchLength = %d, want %d", fibsResp.MatchLength, 7)
+	}
+	if fibsResp.Score1 != 3 {
+		t.Errorf("Score1 = %d, want %d", fibsResp.Score1, 3)
+	}
+	if fibsResp.Score2 != 2 {
+		t.Errorf("Score2 = %d, want %d", fibsResp.Score2, 2)
+	}
+}

@@ -114,6 +114,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("POST /api/rollout", s.handlers.Rollout)
 	mux.HandleFunc("GET /api/rollout/stream", s.handlers.RolloutSSE)
 	mux.HandleFunc("/api/ws", s.handlers.WebSocket)
+	mux.HandleFunc("POST /api/fibsboard", s.handlers.HandleFIBSBoard)
 
 	// Tutor API routes
 	mux.HandleFunc("POST /api/tutor/move", s.handlers.HandleTutorMove)
@@ -148,6 +149,7 @@ func (s *Server) Start() error {
 	log.Printf("  POST /api/move        - Find best moves")
 	log.Printf("  POST /api/cube        - Cube decision")
 	log.Printf("  POST /api/rollout     - Monte Carlo rollout")
+	log.Printf("  POST /api/fibsboard   - Analyze FIBS board string")
 	log.Printf("  POST /api/tutor/move  - Analyze played move")
 	log.Printf("  POST /api/tutor/cube  - Analyze cube decision")
 	log.Printf("  POST /api/tutor/game  - Analyze complete game")
